@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UDP Stream Interview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #fff; color: #111;
+    font-family: system-ui, -apple-system, sans-serif;
+    display: flex;
+    align-items: center; justify-content: center;
+    min-height: 100vh;
+    padding: 32px;
+  }
+
+  .container {
+    display: flex;
+    gap: 48px;
+    border: 2px solid #000;
+    padding: 32px;
+    max-width: 900px;
+    width: 100%;
+  }
+
+  /* Left: stream */
+  .stream-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  canvas {
+    border: 1px solid #000;
+    image-rendering: pixelated;
+  }
+  #status {
+    font-size: 13px; padding: 4px 10px;
+    border-radius: 3px;
+    border: 1px solid #000;
+  }
+  .connecting { background: #fff; }
+  .connected  { background: #eee; }
+  .error      { background: #ddd; }
+  #stats {
+    font-size: 12px; color: #555;
+    font-variant-numeric: tabular-nums;
+    min-height: 18px;
+  }
+
+  /* Right: scenarios */
+  .scenario-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .scenario-panel h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  details {
+    border: 1px solid #000;
+  }
+  summary {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    background: #fff;
+    list-style: none;
+    border-bottom: 1px solid transparent;
+  }
+  details[open] summary {
+    border-bottom: 1px solid #000;
+  }
+  summary::before {
+    content: '\25b6'; display: inline-block;
+    margin-right: 8px; transition: transform 0.2s;
+    font-size: 10px;
+  }
+  details[open] summary::before { transform: rotate(90deg); }
+  .scenario-body {
+    padding: 12px 14px;
+    font-size: 13px;
+    color: #444;
+    line-height: 1.7;
+  }
+  .scenario-body button {
+    margin-top: 10px;
+    padding: 6px 18px;
+    background: #000;
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .scenario-body button:hover { background: #333; }
+  .scenario-body button.active {
+    background: #555;
+    cursor: default;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="stream-panel">
+    <div id="status" class="connecting">Connecting...</div>
+    <canvas id="canvas"></canvas>
+    <div id="stats"></div>
+  </div>
+
+  <div class="scenario-panel">
+    <h2>Scenarios</h2>
+
+    <details open>
+      <summary>Part 1 &mdash; Baseline</summary>
+      <div class="scenario-body">
+        Raw UDP stream with zero packet loss and zero added latency.
+        Verify the stream renders correctly end-to-end.
+        <br><br>
+        Run the sender locally:
+        <pre style="background:#f5f5f5;padding:8px;margin-top:8px;font-size:12px;overflow-x:auto;border:1px solid #ddd">cargo run</pre>
+        <button onclick="setScenario(0, this)">Activate</button>
+      </div>
+    </details>
+
+    <details>
+      <summary>Part 2 &mdash; 5% Packet Loss</summary>
+      <div class="scenario-body">
+        5% of UDP datagrams are dropped at the router.
+        Observe framing corruption and stream recovery behaviour.
+        <br><button onclick="setScenario(1, this)">Activate</button>
+      </div>
+    </details>
+
+    <details>
+      <summary>Part 3 &mdash; 10% Loss + 200ms Latency</summary>
+      <div class="scenario-body">
+        10% packet loss with 200ms of added latency.
+        Observe the compounding effects of loss and delay on the stream.
+        <br><button onclick="setScenario(2, this)">Activate</button>
+      </div>
+    </details>
+
+  </div>
+</div>
+
+<script>
+// --- Configuration ---
+// When served by the bridge, these are filled by template variables.
+// When running locally via Vite, set BRIDGE_HOST to the remote server.
+const BRIDGE_HOST = 'interview-router.adamohq.com';
+const WT_PORT = 4433;
+const WT_URL = `https://${BRIDGE_HOST}:${WT_PORT}`;
+const API_BASE = `https://${BRIDGE_HOST}`;
+
+const scenarios = [
+  { drop: 0,  latency: 0,   label: 'Part 1' },
+  { drop: 5,  latency: 0,   label: 'Part 2' },
+  { drop: 10, latency: 200, label: 'Part 3' },
+];
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const statsEl = document.getElementById('stats');
+
+let frameCount = 0;
+let lastFpsTime = performance.now();
+let fps = 0;
+let latencyMs = 0;
+
+function setStatus(msg, cls) {
+  statusEl.textContent = msg;
+  statusEl.className = cls;
+}
+
+async function setScenario(idx, btn) {
+  const s = scenarios[idx];
+  document.querySelectorAll('.scenario-body button').forEach(b => {
+    b.classList.remove('active');
+    b.textContent = 'Activate';
+  });
+  btn.classList.add('active');
+  btn.textContent = `Active`;
+
+  await fetch(`${API_BASE}/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ drop: s.drop, latency: s.latency })
+  });
+}
+
+class BufferedReader {
+  constructor(reader) {
+    this.reader = reader;
+    this.buf = new Uint8Array(0);
+  }
+
+  async readExact(n) {
+    while (this.buf.length < n) {
+      const { value, done } = await this.reader.read();
+      if (done) throw new Error('stream ended');
+      const merged = new Uint8Array(this.buf.length + value.length);
+      merged.set(this.buf);
+      merged.set(value, this.buf.length);
+      this.buf = merged;
+    }
+    const result = this.buf.slice(0, n);
+    this.buf = this.buf.slice(n);
+    return result;
+  }
+
+  async readU32() {
+    const b = await this.readExact(4);
+    return new DataView(b.buffer, b.byteOffset, 4).getUint32(0);
+  }
+}
+
+function rgb24ToImageData(rgb, w, h) {
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
+    rgba[j]     = rgb[i];
+    rgba[j + 1] = rgb[i + 1];
+    rgba[j + 2] = rgb[i + 2];
+    rgba[j + 3] = 255;
+  }
+  return new ImageData(rgba, w, h);
+}
+
+function updateStats(senderTimestamp) {
+  const now = performance.now();
+  const dt = now - lastFpsTime;
+  if (dt >= 1000) {
+    fps = (frameCount / dt * 1000).toFixed(1);
+    frameCount = 0;
+    lastFpsTime = now;
+  }
+
+  if (senderTimestamp > 0) {
+    latencyMs = Date.now() - senderTimestamp;
+  }
+
+  const latencyStr = latencyMs < 0 ? 'Err' : `${latencyMs} ms`;
+  statsEl.textContent = `${fps} fps  |  latency: ${latencyStr}`;
+}
+
+async function connect() {
+  setStatus('Connecting...', 'connecting');
+
+  const transport = new WebTransport(WT_URL);
+
+  try {
+    await transport.ready;
+  } catch (e) {
+    setStatus(`Connection failed: ${e}`, 'error');
+    setTimeout(connect, 2000);
+    return;
+  }
+
+  setStatus('Connected', 'connected');
+
+  const uniReader = transport.incomingUnidirectionalStreams.getReader();
+  const { value: stream } = await uniReader.read();
+  const br = new BufferedReader(stream.getReader());
+
+  const width = await br.readU32();
+  const height = await br.readU32();
+  canvas.width = width;
+  canvas.height = height;
+  canvas.style.width = `${width * 2}px`;
+  canvas.style.height = `${height * 2}px`;
+
+  setStatus(`Connected \u2014 ${width}\u00d7${height}`, 'connected');
+
+  try {
+    while (true) {
+      const len = await br.readU32();
+      const payload = await br.readExact(len);
+
+      // First 8 bytes = sender timestamp, rest = RGB24
+      const tsView = new DataView(payload.buffer, payload.byteOffset, 8);
+      const senderTs = tsView.getUint32(0) * 0x100000000 + tsView.getUint32(4);
+      const rgb = payload.subarray(8);
+
+      const img = rgb24ToImageData(rgb, width, height);
+      ctx.putImageData(img, 0, 0);
+      frameCount++;
+      updateStats(senderTs);
+    }
+  } catch (e) {
+    setStatus(`Disconnected: ${e.message}`, 'error');
+    setTimeout(connect, 2000);
+  }
+}
+
+connect();
+</script>
+</body>
+</html>
