@@ -9,7 +9,7 @@ use tokio::time;
 #[command(about = "Send test video frames over UDP")]
 struct Args {
     /// Target address (bridge server)
-    #[arg(short, long, default_value = "interview-router.adamohq.com:9001")]
+    #[arg(short, long, default_value = "18.130.238.222:9001")]
     target: String,
 
     #[arg(long, default_value = "80")]

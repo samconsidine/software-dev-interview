@@ -154,10 +154,9 @@
 // --- Configuration ---
 // When served by the bridge, these are filled by template variables.
 // When running locally via Vite, set BRIDGE_HOST to the remote server.
-const BRIDGE_HOST = 'interview-router.adamohq.com';
-const WT_PORT = 4433;
-const WT_URL = `https://${BRIDGE_HOST}:${WT_PORT}`;
-const API_BASE = `https://${BRIDGE_HOST}`;
+const BRIDGE_HOST = '18.130.238.222';
+const WT_URL = `https://${BRIDGE_HOST}`;
+const API_BASE = '';
 
 const scenarios = [
   { drop: 0,  latency: 0,   label: 'Part 1' },
@@ -253,7 +252,18 @@ function updateStats(senderTimestamp) {
 async function connect() {
   setStatus('Connecting...', 'connecting');
 
-  const transport = new WebTransport(WT_URL);
+  const certHash = new Uint8Array([
+    0x80, 0xdf, 0xe8, 0xe5, 0x4a, 0xcb, 0xb3, 0x61,
+    0x0b, 0x9d, 0xfb, 0xa8, 0x24, 0xbf, 0x64, 0xa4,
+    0x68, 0xbf, 0x8b, 0xb8, 0x82, 0xab, 0x20, 0x37,
+    0x52, 0x18, 0x0c, 0x22, 0x42, 0xcd, 0x22, 0x69,
+  ]);
+  const transport = new WebTransport(WT_URL, {
+    serverCertificateHashes: [{
+      algorithm: 'sha-256',
+      value: certHash.buffer,
+    }],
+  });
 
   try {
     await transport.ready;
