@@ -2,7 +2,7 @@ export default {
   server: {
     proxy: {
       '/config': {
-        target: 'http://18.130.238.222:8080',
+        target: 'https://interview-router.adamohq.com',
         changeOrigin: true,
       },
     },
