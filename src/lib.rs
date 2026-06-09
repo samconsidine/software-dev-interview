@@ -11,8 +11,13 @@ use udp_stream::UdpStream;
 const CHUNK_SIZE: usize = 8192;
 
 /// Lightweight wrapper around `udp_stream::UdpStream` that adds
-/// simple length-prefixed framing so individual "frames" survive the
+/// simple length-prefixed framing so individual messages survive the
 /// stream-oriented layer that the crate builds on top of raw UDP.
+///
+/// The length prefix is transport framing only: it gives the hosted relay and
+/// browser a message boundary. Keep this prefix stable for the interview; the
+/// payload bytes can be redesigned as long as both sender and browser agree on
+/// their format.
 ///
 /// Wire format per frame:
 ///   [4 bytes BE length][payload]
