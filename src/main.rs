@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use software_dev_interview::{TestVideoSource, UdpFrameStream};
 use tokio::time;
+
+const FRAME_TIMESTAMP_BYTES: usize = 8;
 
 #[derive(Parser)]
 #[command(about = "Send test video frames over UDP")]
@@ -36,11 +39,11 @@ async fn main() -> std::io::Result<()> {
         .parse()
         .or_else(|_| {
             use std::net::ToSocketAddrs;
-            args.target
-                .to_socket_addrs()
-                .and_then(|mut addrs| addrs.next().ok_or_else(|| {
+            args.target.to_socket_addrs().and_then(|mut addrs| {
+                addrs.next().ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::Other, "could not resolve address")
-                }))
+                })
+            })
         })
         .expect("invalid target address");
 
@@ -50,7 +53,7 @@ async fn main() -> std::io::Result<()> {
     let interval = source.frame_interval();
 
     log::info!(
-        "sending {}x{} RGB24 @ {} fps → {}",
+        "sending {}x{} timestamped RGB24 @ {} fps → {}",
         args.width,
         args.height,
         args.fps,
@@ -67,7 +70,15 @@ async fn main() -> std::io::Result<()> {
 
         ticker.tick().await;
         let frame = source.next_frame();
-        stream.send_frame(&frame).await?;
+        let sent_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let mut payload = Vec::with_capacity(FRAME_TIMESTAMP_BYTES + frame.len());
+        payload.extend_from_slice(&sent_at_ms.to_be_bytes());
+        payload.extend_from_slice(&frame);
+        stream.send_frame(&payload).await?;
 
         if frame_no % (args.fps as u64) == 0 {
             log::info!(

@@ -31,6 +31,7 @@
     justify-content: center;
     gap: 12px;
     flex-shrink: 0;
+    width: 360px;
   }
   canvas {
     border: 1px solid #000;
@@ -45,9 +46,20 @@
   .connected  { background: #eee; }
   .error      { background: #ddd; }
   #stats {
+    display: grid;
+    grid-template-columns: 7ch max-content 18ch max-content 19ch;
+    column-gap: 6px;
+    justify-content: center;
     font-size: 12px; color: #555;
     font-variant-numeric: tabular-nums;
     min-height: 18px;
+    width: 360px;
+    white-space: nowrap;
+  }
+  #fps-stat,
+  #frame-age-stat,
+  #tc-stat {
+    text-align: left;
   }
 
   /* Right: scenarios */
@@ -103,6 +115,14 @@
     background: #555;
     cursor: default;
   }
+  #netem-status {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #555;
+  }
+  #netem-status.error {
+    color: #b00020;
+  }
 </style>
 </head>
 <body>
@@ -111,7 +131,13 @@
   <div class="stream-panel">
     <div id="status" class="connecting">Connecting...</div>
     <canvas id="canvas"></canvas>
-    <div id="stats"></div>
+    <div id="stats">
+      <span id="fps-stat">0.0 fps</span>
+      <span>|</span>
+      <span id="frame-age-stat">frame age: --</span>
+      <span>|</span>
+      <span id="tc-stat">tc: 0ms, 0% loss</span>
+    </div>
   </div>
 
   <div class="scenario-panel">
@@ -120,33 +146,34 @@
     <details open>
       <summary>Part 1 &mdash; Baseline</summary>
       <div class="scenario-body">
-        Raw UDP stream with zero packet loss and zero added latency.
+        Clear tc netem impairments for zero packet loss and zero added latency.
         Verify the stream renders correctly end-to-end.
         <br><br>
         Run the sender locally:
         <pre style="background:#f5f5f5;padding:8px;margin-top:8px;font-size:12px;overflow-x:auto;border:1px solid #ddd">cargo run</pre>
-        <button onclick="setScenario(0, this)">Activate</button>
+        <button onclick="applyNetemScenario(0, this)">Apply netem</button>
       </div>
     </details>
 
     <details>
       <summary>Part 2 &mdash; 5% Packet Loss</summary>
       <div class="scenario-body">
-        5% of UDP datagrams are dropped at the router.
+        Apply tc netem loss to drop 5% of UDP datagrams.
         Observe framing corruption and stream recovery behaviour.
-        <br><button onclick="setScenario(1, this)">Activate</button>
+        <br><button onclick="applyNetemScenario(1, this)">Apply netem</button>
       </div>
     </details>
 
     <details>
       <summary>Part 3 &mdash; 10% Loss + 200ms Latency</summary>
       <div class="scenario-body">
-        10% packet loss with 200ms of added latency.
-        Observe the compounding effects of loss and delay on the stream.
-        <br><button onclick="setScenario(2, this)">Activate</button>
+        Apply tc netem loss and delay: 10% packet loss with 200ms latency.
+        Observe how loss and delay combine on the stream.
+        <br><button onclick="applyNetemScenario(2, this)">Apply netem</button>
       </div>
     </details>
 
+    <div id="netem-status">tc netem: not applied</div>
   </div>
 </div>
 
@@ -163,35 +190,102 @@ const scenarios = [
   { drop: 5,  latency: 0,   label: 'Part 2' },
   { drop: 10, latency: 200, label: 'Part 3' },
 ];
+const FRAME_TIMESTAMP_BYTES = 8;
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
-const statsEl = document.getElementById('stats');
+const fpsStatEl = document.getElementById('fps-stat');
+const frameAgeStatEl = document.getElementById('frame-age-stat');
+const tcStatEl = document.getElementById('tc-stat');
+const netemStatusEl = document.getElementById('netem-status');
 
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let fps = 0;
+let activeNetem = { drop: 0, latency: 0 };
+let lastFrameAgeMs = null;
 
 function setStatus(msg, cls) {
   statusEl.textContent = msg;
   statusEl.className = cls;
 }
 
-async function setScenario(idx, btn) {
+function netemLabel(config) {
+  return `${config.drop}% loss, ${config.latency}ms latency`;
+}
+
+function setActiveNetem(config) {
+  activeNetem = {
+    drop: Number(config.drop) || 0,
+    latency: Number(config.latency) || 0,
+  };
+}
+
+async function applyNetemScenario(idx, btn) {
   const s = scenarios[idx];
+  const buttons = document.querySelectorAll('.scenario-body button');
+  buttons.forEach(b => {
+    b.disabled = true;
+  });
+  btn.textContent = 'Applying...';
+  netemStatusEl.className = '';
+  netemStatusEl.textContent = `tc netem: applying ${netemLabel(s)}`;
+
+  try {
+    const response = await fetch(`${API_BASE}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ drop: s.drop, latency: s.latency })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const applied = await response.json();
+    setActiveNetem(applied);
+
+    buttons.forEach(b => {
+      b.classList.remove('active');
+      b.textContent = 'Apply netem';
+    });
+    btn.classList.add('active');
+    btn.textContent = 'Netem active';
+    netemStatusEl.textContent = `tc netem: ${netemLabel(applied)}`;
+  } catch (e) {
+    netemStatusEl.className = 'error';
+    netemStatusEl.textContent = `tc netem failed: ${e.message}`;
+    btn.textContent = 'Retry netem';
+  } finally {
+    buttons.forEach(b => {
+      b.disabled = false;
+    });
+  }
+}
+
+async function loadNetemScenario() {
+  const response = await fetch(`${API_BASE}/config`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const active = await response.json();
+  setActiveNetem(active);
+  netemStatusEl.className = '';
+  netemStatusEl.textContent = `tc netem: ${netemLabel(active)}`;
+
+  const idx = scenarios.findIndex(s => s.drop === active.drop && s.latency === active.latency);
+  if (idx < 0) {
+    return;
+  }
+
   document.querySelectorAll('.scenario-body button').forEach(b => {
     b.classList.remove('active');
-    b.textContent = 'Activate';
+    b.textContent = 'Apply netem';
   });
+  const btn = document.querySelectorAll('.scenario-body button')[idx];
   btn.classList.add('active');
-  btn.textContent = `Active`;
-
-  await fetch(`${API_BASE}/config`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ drop: s.drop, latency: s.latency })
-  });
+  btn.textContent = 'Netem active';
 }
 
 class BufferedReader {
@@ -234,6 +328,27 @@ function payloadToImageData(payload, w, h) {
   return new ImageData(rgba, w, h);
 }
 
+function splitFramePayload(payload) {
+  if (payload.length < FRAME_TIMESTAMP_BYTES) {
+    console.error(`short frame payload: ${payload.length} bytes`);
+    lastFrameAgeMs = null;
+    return payload;
+  }
+
+  const view = new DataView(payload.buffer, payload.byteOffset, FRAME_TIMESTAMP_BYTES);
+  const sentAtMs = view.getUint32(0) * 4294967296 + view.getUint32(4);
+  const ageMs = Date.now() - sentAtMs;
+
+  if (ageMs < -10000 || ageMs > 60000) {
+    console.error(`implausible frame timestamp: ${sentAtMs} (${Math.round(ageMs)}ms age)`);
+    lastFrameAgeMs = null;
+  } else {
+    lastFrameAgeMs = Math.max(0, Math.round(ageMs));
+  }
+
+  return payload.slice(FRAME_TIMESTAMP_BYTES);
+}
+
 function updateStats() {
   const now = performance.now();
   const dt = now - lastFpsTime;
@@ -243,7 +358,10 @@ function updateStats() {
     lastFpsTime = now;
   }
 
-  statsEl.textContent = `${fps} fps  |  latency: --`;
+  const frameAge = lastFrameAgeMs == null ? '--' : `${lastFrameAgeMs}ms`;
+  fpsStatEl.textContent = `${fps} fps`;
+  frameAgeStatEl.textContent = `frame age: ${frameAge}`;
+  tcStatEl.textContent = `tc: ${activeNetem.latency}ms, ${activeNetem.drop}% loss`;
 }
 
 async function connect() {
@@ -278,8 +396,9 @@ async function connect() {
     while (true) {
       const len = await br.readU32();
       const payload = await br.readExact(len);
+      const rgb = splitFramePayload(payload);
 
-      const img = payloadToImageData(payload, width, height);
+      const img = payloadToImageData(rgb, width, height);
       ctx.putImageData(img, 0, 0);
       frameCount++;
       updateStats();
@@ -290,6 +409,10 @@ async function connect() {
   }
 }
 
+loadNetemScenario().catch(e => {
+  netemStatusEl.className = 'error';
+  netemStatusEl.textContent = `tc netem status unavailable: ${e.message}`;
+});
 connect();
 </script>
 </body>

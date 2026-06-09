@@ -309,7 +309,6 @@ dependencies = [
 name = "software-dev-interview"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "clap",
  "env_logger",
  "log",
